@@ -1,3 +1,6 @@
+#ifndef __DEVICES_H__
+#define __DEVICES_H__
+
 #include <common.h>
 #include <amdev.h>
 #include <klib.h>
@@ -34,7 +37,7 @@ typedef struct {
 // -------------------------------------------------------------------
 
 #define RD_SIZE (4 << 20)
-#define BLK_SIZE (4<<10)
+
 typedef struct {
   char *start, *end;
 } rd_t;
@@ -104,3 +107,5 @@ typedef struct {
 extern char keymap[], keymap_shift[];
 
 #define TERM_FONT font_sans
+
+#endif

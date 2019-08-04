@@ -14,14 +14,9 @@ static void kmt_spin_unlock(spinlock_t *lk);
 
 task_t kernel_task[MAX_CPU];
 
-struct task_entry{
-    task_t* task;
-    int used;
-};
 
-typedef struct task_entry task_entry;
-static task_entry tasks[MAX_TASK];
-static spinlock_t entry_lock[MAX_TASK];
+task_entry tasks[MAX_TASK];
+spinlock_t entry_lock[MAX_TASK];
 int current_id[MAX_CPU];
 static int past_id[MAX_CPU];
 

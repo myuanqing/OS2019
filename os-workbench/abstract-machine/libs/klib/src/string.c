@@ -33,7 +33,7 @@ size_t strlen(const char *s) {
 }
 
 char *strcpy(char* dst,const char* src) {
-  while(*src++!='\0')*dst++ = *src++;
+  while(*src!='\0')*dst++ = *src++;
   return dst;
 }
 
@@ -49,7 +49,15 @@ char* strcat(char* dst, const char* src) {
   while((*dst++ = *src++) != '\0');
   return ret;
 }
-
+char* strncat(char* dst, const char* src,size_t n) {
+    size_t dest_len=strlen(dst);
+    size_t i;
+    for(i=0;i<n&&src[i]!='\0';++i){
+        dst[dest_len+i]=src[i];
+    }
+    dst[dest_len+i]='\0';
+    return dst;
+}
 int strcmp(const char* s1, const char* s2) {
   const unsigned char* t1 = (const unsigned char*)s1;
   const unsigned char* t2 = (const unsigned char*)s2;
@@ -120,4 +128,13 @@ void* memmove(void* dest, const void* src, size_t count){
   }
   return d;
 }
+static inline int isalpha(char c){
+    return (c>='a'&&c<='z')||
+           (c>='A'&&c<='Z');
+}
+
+
+
+
+
 #endif

@@ -1,361 +1,245 @@
-#include<common.h>
-#include<klib.h>
-#include<am.h>
-#include<devices.h>
+#include <common.h>
+#include <devices.h>
+#include <vfs.h>
+#include <pathread.h>
 
-inode_t* root_inode;
-spinlock_t root_lk;
-spinlock_t tty_lk[4];
+extern int current_id[MAX_CPU];
+extern task_entry tasks[MAX_TASK];
 
-
-typedef struct directory* directory_ptr;
-struct directory{
-    char name[32];
-    inode_t* ind;
-    directory_ptr next;
-};
-typedef struct directory directory_t;
+#define this_fd (current->fd[fd])
 
 
-static void vfs_init();
-static int vfs_mount(const char *path, filesystem_t *fs);
-static int vfs_unmount(const char*path);
-
-
-static ssize_t tty_write(file_t *file, const char*buf, size_t size){
-    inode_t* ind = file->inode;
-    device_t* tty = (device_t*)ind->ptr;
-    tty->ops->write(tty,0,buf,size);
-    return size;
-              
+int fprintf(int fd,const char* fmt, ...){
+    char buf[0x100];
+    va_list ap;
+    va_start(ap,fmt);
+    int len=vsprintf(buf,fmt,ap);//vsprintf will call va_end(ap);
+    return vfs->write(fd,buf,len);
 }
 
-static ssize_t ramdisk_write(file_t *file, const char*buf, size_t size){
-    inode_t* ind = file->inode;
-    device_t* ramdisk = (device_t*)ind->ptr;
-    ramdisk->ops->write(ramdisk,0,buf,size);
-    return size;
+struct{
+    const char* path;
+    inode_t backup;
+}mount_table[20];
+#define mtt mount_table
+
+int mount_table_cnt=0;
+#define mtt_tab mtt[mount_table_cnt]
+
+
+spinlock_t mount_table_lk;
+
+int new_fd_num(task_t* current){
+    for(int i=0;i<NOFILE;++i){
+        if(!(current->fd[i])){
+            return i;
+        }
+    }
+    return -1;//No more file descripter (number)!
+}
+static inode_t* vfs_root=NULL;
+
+inode_t* vfs_lookup(const char* path,int flags);
+inode_t* vfs_lookup(const char* path,int flags){
+    inode_t* start=NULL;
+    if(*path=='/'){
+        start=vfs_root;
+        //printf("%p\n",vfs_root);
+    }else{
+        start=get_cur()->cur_dir;
+    }
+    return start->ops->find(start,path,flags);
 }
 
-static ssize_t null_write(file_t *file, const char*buf, size_t size){
+void vfs_init(void){
+    kmt->spin_init(&mount_table_lk,"");
+    blkfs.ops->init  (&blkfs    ,"ramdisk1" ,dev_lookup("ramdisk1") );
+    devfs.ops->init     (&devfs     ,"devfs"    ,NULL                   );
+//    procfs.ops->init    (&procfs    ,"procfs"   ,NULL                   );
+
+    vfs->mount("/"      ,&blkfs);
+    vfs->mount("/dev/"   ,&devfs);   //printf("here\n");
+//    vfs->mount("/proc/"  ,&procfs);
+}
+
+
+
+int vfs_access(const char *path, int mode){
+    return vfs_lookup(path,mode)==NULL;
+}
+
+
+int vfs_mount(const char *path, filesystem_t *fs){
+    kmt->spin_lock(&mount_table_lk);
+
+    if(strcmp(path,"/")){
+        inode_t* origin=vfs_lookup(path,O_RDONLY|O_DIRECTORY);
+        //printf("%s\n",path);
+        //Replace origin inode at path
+        if(origin==NULL){
+            TODO();
+        }
+        mtt_tab=( typeof(mtt_tab) ){
+            .path=path,
+            .backup=*origin,
+        };
+        *origin =*fs->root;
+        ++mount_table_cnt;
+
+        char root_parent[0x100];
+        strcpy(root_parent,path);
+        dir_cat(root_parent,"..");
+        fs->root_parent=vfs_lookup(root_parent,O_RDONLY|O_DIRECTORY);
+    }else{
+        vfs_root=fs->root_parent=fs->root;
+    }
+
+    kmt->spin_unlock(&mount_table_lk);
     return 0;
 }
-static ssize_t null_read(file_t *file, char*buf, size_t size){
+int vfs_unmount_real(const char *path){
+    for(int i=0;i<mount_table_cnt;++i){
+        if(!strcmp(path,mount_table[i].path)){
+            --mount_table_cnt;
+            *vfs_lookup(path,O_RDONLY|O_DIRECTORY)=mount_table[i].backup;
+            mount_table[i]=mount_table[mount_table_cnt];
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int vfs_unmount(const char* path){
+    kmt->spin_lock(&mount_table_lk);
+    int ret=vfs_unmount_real(path);
+    kmt->spin_unlock(&mount_table_lk);
+    return ret;
+}
+
+
+
+
+int vfs_mkdir(const char* path){
+    if(vfs_lookup(path,O_RDONLY)){
+        //warn("cannot create directory '%s': File exists",path);
+        return -1;
+    }else{
+        //clear_warn();
+        return vfs_lookup(path,O_RDONLY|O_CREATE|O_DIRECTORY)==NULL;
+    }
+}
+
+
+
+static inline inode_t* get_parent(const char**s,char* new_parent){
+    const char* path=*s;
+    int len=get_last_slash(path)+1;
+    *s=path+len;
+    if(len==0){
+        return get_cur()->cur_dir;
+    }else{
+        strncpy(new_parent,path,len);
+        return vfs_lookup(new_parent,O_RDONLY);
+    }
+}
+
+
+int vfs_rmdir(const char *path){
+    char new_parent[0x100];
+
+    inode_t* parent=get_parent(&path,new_parent);
+
+    if(!parent){
+        //warn("No such file or directory",new_parent);
+    }else if(parent->ops->find(parent,path,O_RDONLY)){
+        return parent->ops->rmdir(parent,path);
+    }else{
+        //warn("No such file or directory",new_parent);
+    }
     return 0;
 }
 
-static ssize_t zero_write(file_t *file, const char*buf, size_t size){
+static inline int vfs_open_real(const char *path,int flags){
+    task_t* current=get_cur();
+
+    int fd=new_fd_num(current);
+    assert(fd!=-1);//,"No more file descripter!");//Or return -1;
+
+    inode_t* inode=vfs_lookup(path,flags);
+    if(!inode)return -1;
+    this_fd=pmm->alloc(sizeof(file_t));
+
+    this_fd->inode=inode;
+    this_fd->inode->ops->open(this_fd,flags);
+    return fd;
+}
+
+static int vfs_open(const char *path, int flags){
+    int ret=vfs_open_real(path,flags);
+    return ret;
+}
+
+
+static inline ssize_t vfs_read_real(int fd, void* buf,size_t nbyte){
+    task_t* current=get_cur();
+    if(this_fd){
+        return this_fd->inode->ops->read(this_fd,buf,nbyte);;
+    }else{
+        return 0;
+    }
+}
+
+static ssize_t vfs_read(int fd,void *buf,size_t nbyte){
+    ssize_t ret=vfs_read_real(fd,buf,nbyte);
+    return ret;
+}
+
+static inline ssize_t vfs_write_real(int fd,void *buf,size_t nbyte){
+    task_t* current=get_cur();
+    if(this_fd){
+        return this_fd->inode->ops->write(this_fd,buf,nbyte);
+    }else{
+        return 0;
+    }
+}
+
+static ssize_t vfs_write(int fd,void* buf,size_t nbyte){
+    ssize_t ret=vfs_write_real(fd,buf,nbyte);
+    return ret;
+}
+
+off_t vfs_lseek(int fd,off_t offset, int whence){
+    TODO();
+}
+
+int vfs_close(int fd){
+    task_t* current=get_cur();
+    this_fd->inode->ops->close(this_fd);
+    assert(this_fd->refcnt>=0);//,"fd with refcnt <0!\n");
+    if(this_fd->refcnt==0){
+        pmm->free(this_fd);
+    }
+    this_fd=NULL;
     return 0;
-}
-static ssize_t zero_read(file_t *file, char*buf, size_t size){
-    memset(buf, '\0', size);
-    return size;    
-}
-
-static ssize_t random_write(file_t *file, const char*buf, size_t size){
-    return 0;
-}
-static ssize_t random_read(file_t *file, char*buf, size_t size){
-    int c = rand(); 
-    memcpy(buf, &c,sizeof(int));
-    return size;    
-}
-
-//static ssize_t tty_read(file_t *file, char *buf, size_t size){
-//    inode_t* ind = file->inode;
-//    device_t* tty = (device_t*)ind->ptr;
-//    tty->ops->read(tty,0,buf,size);
-//    return size;
-//}
-static inode_t* blkfs_lookup(inode_t* ind, const char* name, int flags){
-    int i = 1;
-    int begin = 1;
-    if(ind != root_inode){
-       i=0;
-       begin = 0;
-    }
-    while(name[i] != '\0'){    
-        if(name[i] == '/'){
-            //printf("%d\n",i);
-            //inode_t* next= NULL;
-            if(ind->type == DIREC){
-                directory_ptr ptr = (directory_ptr)ind->ptr;
-                while(ptr!=NULL){
-                    //printf("%s,%s\n",name+begin,ptr->name);
-                    //printf("%d\n",i-begin);
-                    if(strncmp(ptr->name, name+begin, i-begin)==0){
-                        //printf("here\n");
-                        return ptr->ind->fs->ops->lookup(ptr->ind, name+i+1, flags);                                
-                    }else{
-                        ptr = ptr->next;
-                    } 
-                }
-                return NULL;
-            }else{
-                return NULL;    
-            }
-        }
-        i++;   
-    }
-    if( ind->type == DIREC ){
-        if(i == 0){
-            return ind;
-        }
-        directory_ptr ptr = (directory_ptr)ind->ptr;  
-        while(ptr!=NULL){
-            if(strncmp(ptr->name, name, i)==0){
-                
-                return ptr->ind;                                
-            }else{
-                ptr = ptr->next;
-            } 
-        }
-        return NULL;
-    }else if(ind->type == FIL){
-//        printf("here\n");
-        if(i == 0){return NULL;}
-        return ind;
-    }
-    return NULL;
-}
-
-static inode_t* devfs_lookup(inode_t* ind, const char* name, int flags){
-//    printf("lookup%p\n",ind);
-    int i = 0;
-//    printf("begin\n");
-    while(name[i] != '\0'){
-        if(name[i] == '/'){
-            //inode_t* next= NULL;
-            if(ind->type == DIREC){
-                directory_ptr ptr = (directory_ptr)ind->ptr;
-                while(ptr!=NULL){
-                    if(strncmp(ptr->name, name, i)==0){
-                        return ptr->ind->fs->ops->lookup(ptr->ind, name+i+1, flags);                                
-                    }else{
-                        ptr = ptr->next;
-                    } 
-                }
-                return NULL;
-            }else{
-                return NULL;    
-            }
-        }
-        i++;    
-    }
-    if( ind->type == DIREC ){
-        if(i == 0){
-            return ind;
-        }
-        directory_ptr ptr = (directory_ptr)ind->ptr;  
-        while(ptr!=NULL){
-            if(strncmp(ptr->name, name, i)==0){
-                
-                return ptr->ind;                                
-            }else{
-                ptr = ptr->next;
-            } 
-        }
-        return NULL;
-    }else if(ind->type == FIL){
-//        printf("here\n");
-        if(i == 0){return NULL;}
-        return ind;
-    }
-    return NULL;
-}
-
-
-
-
-static void mount_blkfs(filesystem_t* fs){
-    fs->ops = pmm->alloc(sizeof(fsops_t));
-    fs->dev = NULL;
-    fs->ops->init = NULL;
-    fs->ops->close = NULL;
-    fs->ops->lookup = blkfs_lookup;
-}
-
-static void mount_devfs(filesystem_t* fs){
-    fs->ops = pmm->alloc(sizeof(fsops_t));
-    fs->dev = NULL;
-    fs->ops->init = NULL;
-    fs->ops->close = NULL;
-    fs->ops->lookup = devfs_lookup;
-}   
-
-
-
-
-static void vfs_init(){
-    kmt->spin_init(&root_lk,"rootfs");
-    for(int i = 0;i < 4;++i){
-        kmt->spin_init(&tty_lk[i], "tty");
-    }
-    root_inode = NULL;
-    filesystem_t *blkfs = pmm->alloc(sizeof(filesystem_t));
-    mount_blkfs(blkfs);
-    vfs_mount("/",blkfs);
-    filesystem_t *devfs = pmm->alloc(sizeof(filesystem_t));
-    mount_devfs(devfs);
-    vfs_mount("/dev",devfs);
-    inode_t* ind = root_inode->fs->ops->lookup(root_inode,"/dev/tty1",1);
-    file_t* filep = pmm->alloc(sizeof(file_t));
-    filep->inode = ind;
-    if(ind!=NULL){
-        ind->ops->write(filep, "1234",5);
-        //char buf[10];
-        //ind->ops->read(filep,buf,3);
-        //printf("%s\n",buf);
-    }
-    //if(devfs_lookup)
-    //devfs->init();    
-}
-
-static int vfs_mount(const char *path, filesystem_t *fs){
-    if(strcmp(path,"/")==0){
-        kmt->spin_lock(&root_lk);
-        root_inode = (inode_t*)pmm->alloc(sizeof(inode_t));
-        root_inode->refcnt = 0;
-        //root_inode->ptr = NULL;
-        root_inode->fs = fs;
-        root_inode->ops = NULL;
-        root_inode->type = DIREC;
-
-        root_inode->ptr = pmm->alloc(sizeof(directory_t));
-        directory_ptr ptr = (directory_ptr)root_inode->ptr;
-        memcpy(ptr->name, ".",2);
-        ptr->ind = root_inode;
-        ptr->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-        memcpy(ptr->next->name, "..",3);
-        ptr->next->ind = root_inode; 
-        ptr->next->next = NULL;
-        kmt->spin_unlock(&root_lk);
-    }else {
-        if(strcmp(path,"/dev")==0){
-            kmt->spin_lock(&root_lk);
-            inode_t* ind = (inode_t*)pmm->alloc(sizeof(inode_t));
-            //printf("%p\n",ind);
-            directory_ptr dptr = (directory_ptr)pmm->alloc(sizeof(directory_t));
-            memcpy(dptr->name, "dev", 4);
-            dptr->ind = ind;
-            dptr->next = (directory_ptr)root_inode->ptr;
-            root_inode->ptr = dptr;
-            
-            
-            ind->refcnt = 0;
-            ind->fs = fs;
-            ind->ops = NULL;
-            ind->type = DIREC;
-            ind->ptr = pmm->alloc(sizeof(directory_t));
-            directory_ptr ptr = (directory_ptr)ind->ptr;        
-            memcpy(ptr->name, ".",2);
-            ptr->ind = root_inode;
-            ptr->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-            memcpy(ptr->next->name, "..",3);
-            ptr->next->ind = ind; 
-            ptr->next->next = NULL;
-            //if(ind->ptr == NULL){printf("hambu\n");}
-            ptr->next->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-            directory_ptr dev_ptr = ptr->next->next;
-            const char tty [4][5]= {"tty1","tty2","tty3","tty4"};
-            for(int i = 0;i < 4; ++i){
-                inode_t* dev_ind = (inode_t*)(pmm->alloc(sizeof(inode_t)));
-                memcpy(dev_ptr->name,tty[i],5);
-                dev_ptr->ind = dev_ind;
-                dev_ptr->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-                dev_ptr = dev_ptr->next;
-                dev_ind->type = FIL;
-                dev_ind->refcnt = 0;
-                dev_ind->ptr = dev_lookup(tty[i]);
-                dev_ind->fs = fs;
-                dev_ind->ops = pmm->alloc(sizeof(inodeops_t));
-                dev_ind->ops->write = tty_write;
-                //dev_ind->ops->read = tty_read;
-            }
-            const char ramdisk[2][9]={"ramdisk0","ramdisk1"};
-            for(int i = 0;i < 2;++i){
-                inode_t* dev_ind = (inode_t*)(pmm->alloc(sizeof(inode_t)));
-                memcpy(dev_ptr->name,tty[i],9);
-                dev_ptr->ind = dev_ind;
-                dev_ptr->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-                dev_ptr = dev_ptr->next;
-                dev_ind->type = FIL;
-                dev_ind->refcnt = 0;
-                dev_ind->ptr = dev_lookup(ramdisk[i]);
-                dev_ind->fs = fs;
-                dev_ind->ops = pmm->alloc(sizeof(inodeops_t));
-                dev_ind->ops->write = ramdisk_write;
-            }
-
-            inode_t* null_ind = (inode_t*)(pmm->alloc(sizeof(inode_t)));
-            memcpy(dev_ptr->name,"null",5);
-            dev_ptr->ind = null_ind;
-            dev_ptr->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-            dev_ptr = dev_ptr->next;
-            null_ind->type = FIL;
-            null_ind->refcnt = 0;
-            null_ind->ptr = NULL;
-            null_ind->fs = fs;
-            null_ind->ops = pmm->alloc(sizeof(inodeops_t));
-            null_ind->ops->read = null_read;
-            null_ind->ops->write = null_write;
-
-            inode_t* zero_ind = (inode_t*)(pmm->alloc(sizeof(inode_t)));
-            memcpy(dev_ptr->name,"zero",5);
-            dev_ptr->ind = zero_ind;
-            dev_ptr->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-            dev_ptr = dev_ptr->next;
-            zero_ind->type = FIL;
-            zero_ind->refcnt = 0;
-            zero_ind->ptr = NULL;
-            zero_ind->fs = fs;
-            zero_ind->ops = pmm->alloc(sizeof(inodeops_t));
-            zero_ind->ops->read = zero_read;
-            zero_ind->ops->write = zero_write;
-
-
-            inode_t* random_ind = (inode_t*)(pmm->alloc(sizeof(inode_t)));
-            memcpy(dev_ptr->name,"random",5);
-            dev_ptr->ind = random_ind;
-            dev_ptr->next = (directory_ptr)pmm->alloc(sizeof(directory_t));
-            dev_ptr = dev_ptr->next;
-            random_ind->type = FIL;
-            random_ind->refcnt = 0;
-            random_ind->ptr = NULL;
-            random_ind->fs = fs;
-            random_ind->ops = pmm->alloc(sizeof(inodeops_t));
-            random_ind->ops->read = random_read;
-            random_ind->ops->write = random_write;
-            //if(ind->fs->ops->lookup(ind,"tty1",1)!=NULL){
-                //printf("hehe\n");
-            //}            
-
-            kmt->spin_unlock(&root_lk);
-        }
-        //if(root_inode == NULL ){
-        //    return -1;
-        //}else{
-        //    inode_t* father_inode_ptr = root_inode->fs->ops->lookup(root_inode, path,0); 
-        
-        //    return 0;
-        //}
-    }    
-    return -1;    
-}
-
-static int vfs_unmount(const char*path ){
-    
-    return 1;
 }
 
 MODULE_DEF(vfs){
-	.init = vfs_init,
-//	.access = vfs_access,
-	.mount = vfs_mount,
-	.unmount = vfs_unmount,
-//	.open = vfs_open,
-//	.read = vfs_read,
-//	.write = vfs_write,
-//	.lseek = vfs_lseek,
-//	.close = vfs_close,
+  .init     =vfs_init,
+  .access   =vfs_access,
+  .mount    =vfs_mount,
+  .unmount  =vfs_unmount,
+  .mkdir    =vfs_mkdir,
+  .rmdir    =vfs_rmdir,
+  .open     =vfs_open,
+  .read     =vfs_read,
+  .write    =vfs_write,
+  .lseek    =vfs_lseek,
+  .close    =vfs_close,
 };
+
+ssize_t std_read(void *buf){
+    return vfs->read(STDIN,buf,-1);
+}
+ssize_t std_write(void *buf){
+    return vfs->write(STDOUT,buf,strlen(buf));
+}

@@ -5,7 +5,7 @@
 #include <nanos.h>
 
 #define MAX_CPU 8
-#define MAX_TASK 20
+#define MAX_TASK 0x40
 
 
 
@@ -47,13 +47,24 @@ typedef enum TASK_STATE{RUNNABLE=0, RUNNING, WAITING,KILLED, WAITING_TOBE, RUNNA
 #define NOFILE 16
 struct task{
   const char* name;
-  file_t *fildes[NOFILE];  
+  file_t *fd[NOFILE];  
+  inode_t* cur_dir;
   TASK_STATE state;
   inode_t* cur_inode;
   sem_t* wait;
   _Context context;
-  char* stack;  
+  char* stack;
+  char pwd[0x100]; 
 };
+
+
+struct task_entry{
+    task_t* task;
+    int used;
+};
+
+typedef struct task_entry task_entry;
+
 
 struct spinlock{
     const char* name;
@@ -104,6 +115,8 @@ extern int current_id[MAX_CPU];
 extern inode_t* root_inode;
 
 struct filesystem {
+  const char* name;
+  inode_t *inodes, *root, *root_parent;
   fsops_t *ops;
   device_t *dev;
 };
@@ -111,7 +124,7 @@ struct filesystem {
 
 struct fsops {
   void (*init)(struct filesystem *fs, const char *name, device_t *dev);
-  inode_t *(*lookup)(inode_t *ind, const char *path, int flags);
+  inode_t *(*lookup)(filesystem_t *fs, const char *path, int flags);
   int (*close)(inode_t *inode);
 };
 
@@ -124,10 +137,9 @@ struct inodeops {
   ssize_t (*read)(file_t *file, char *buf, size_t size);
   ssize_t (*write)(file_t *file, const char *buf, size_t size);
   off_t (*lseek)(file_t *file, off_t offset, int whence);
-  int (*mkdir)(const char *name);
-  int (*rmdir)(const char *name);
-  int (*link)(const char *name, inode_t *inode);
-  int (*unlink)(const char *name);
+  int (*mkdir)(inode_t* inode, const char *name);
+  int (*rmdir)(inode_t* inode, const char *name);
+  inode_t* (*find)(inode_t* cur,const char* path,int flags);
 };
 
 #define DIREC 0
@@ -144,7 +156,8 @@ struct file {
   int flags;
   int refcnt; 
   inode_t *inode;
-  uint64_t offset;
+  uint32_t offset;
+  spinlock_t lk;
 };
 
 typedef struct{
@@ -164,3 +177,13 @@ typedef struct{
 } MODULE(vfs);
 
 #endif
+
+/*
+typedef struct directory* directory_ptr;
+struct directory{
+    char name[32];
+    inode_t* ind;
+    directory_ptr next;
+};
+typedef struct directory directory_t;
+*/
