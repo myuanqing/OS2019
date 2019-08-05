@@ -77,6 +77,9 @@ void dir_cat(char* dest,const char* src){
         int len=strlen(dest);
         //Add '/' to end
         if(dest[len-1]!='/'){
+            printf("%s\n",dest);
+            printf("%d\n",len);
+            printf("rrrrrrrrhere\n");
             dest[len]='/';
             dest[len+1]='\0';
         }

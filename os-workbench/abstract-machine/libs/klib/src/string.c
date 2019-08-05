@@ -28,17 +28,26 @@ char* strstr(const char* haystack, const char* needle){
 
 size_t strlen(const char *s) {
   size_t c = 0;
-  while(*s++!='\0')c++;
+  while(*s!='\0'){c++, s++;}
   return c;
 }
 
 char *strcpy(char* dst,const char* src) {
-  while(*src!='\0')*dst++ = *src++;
+  while(*src!='\0'){
+    *dst++ = *src++;
+  }
+  *dst = '\0';
   return dst;
 }
 
 char* strncpy(char* dst, const char* src, size_t n) {
-  return NULL;
+  for(int i = 0;i < n; ++i){
+    if(*src != '\0'){
+      *dst++ = *src++;
+    }else{break;}
+  }
+  *dst = '\0';
+  return dst;
 }
 
 char* strcat(char* dst, const char* src) {

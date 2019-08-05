@@ -126,7 +126,7 @@ static inode_t* devfs_ifind(inode_t* cur,const char* path,int flags){
 
 static inode_t* devfs_rootifind(inode_t* cur,const char* path,int flags){
     inode_t* next=NULL;
-    printf("Here\n");
+    //printf("Here\n");
     while(*path=='/')++path;
     if(!*path)return cur;
 

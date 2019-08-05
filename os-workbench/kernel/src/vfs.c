@@ -20,7 +20,7 @@ int fprintf(int fd,const char* fmt, ...){
 struct{
     const char* path;
     inode_t backup;
-}mount_table[20];
+}mount_table[0x20];
 #define mtt mount_table
 
 int mount_table_cnt=0;
@@ -48,6 +48,7 @@ inode_t* vfs_lookup(const char* path,int flags){
     }else{
         start=get_cur()->cur_dir;
     }
+    //printf("find%s\n",path);
     return start->ops->find(start,path,flags);
 }
 
@@ -55,11 +56,11 @@ void vfs_init(void){
     kmt->spin_init(&mount_table_lk,"");
     blkfs.ops->init  (&blkfs    ,"ramdisk1" ,dev_lookup("ramdisk1") );
     devfs.ops->init     (&devfs     ,"devfs"    ,NULL                   );
-//    procfs.ops->init    (&procfs    ,"procfs"   ,NULL                   );
+    procfs.ops->init    (&procfs    ,"procfs"   ,NULL                   );
 
     vfs->mount("/"      ,&blkfs);
     vfs->mount("/dev/"   ,&devfs);   //printf("here\n");
-//    vfs->mount("/proc/"  ,&procfs);
+    vfs->mount("/proc/"  ,&procfs);
 }
 
 
@@ -74,7 +75,6 @@ int vfs_mount(const char *path, filesystem_t *fs){
 
     if(strcmp(path,"/")){
         inode_t* origin=vfs_lookup(path,O_RDONLY|O_DIRECTORY);
-        //printf("%s\n",path);
         //Replace origin inode at path
         if(origin==NULL){
             TODO();
@@ -88,7 +88,9 @@ int vfs_mount(const char *path, filesystem_t *fs){
 
         char root_parent[0x100];
         strcpy(root_parent,path);
+        //printf("rrrrrrrrrrrr%s\n",root_parent);
         dir_cat(root_parent,"..");
+        //printf("root%s\n",root_parent);
         fs->root_parent=vfs_lookup(root_parent,O_RDONLY|O_DIRECTORY);
     }else{
         vfs_root=fs->root_parent=fs->root;

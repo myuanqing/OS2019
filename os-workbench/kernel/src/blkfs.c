@@ -4,8 +4,8 @@
 #define INODE_START 0x40
 #define INODE_END 0x400
 
-#define FILE_MODE (1)
 #define DIR_MODE (0)
+#define FILE_MODE (1)
 #define DISK_WIPE (0x3f3f3f3f)
 
  
@@ -93,7 +93,7 @@ int block_write(device_t* dev,uint32_t off,uint32_t shift,const char* s,size_t n
 uint32_t new_inode(device_t* dev){
     uint32_t off;
     uint32_t buf;
-    for(off=INODE_START;;off+=0x10){
+    for(off=INODE_START;;off+=sizeof(disknode_t)){
         dev->ops->read(dev,off,&buf,0x4);
         if(buf==0){
             uint32_t one=1;
@@ -174,8 +174,8 @@ int disk_init(device_t* dev){
         {0x400,0x00000000},
         {0x404,       '/'},
         {0x480,0x00000000},
-        {0x484,0x00000580},
-        {0x488,0x00000680},
+        {0x484,0x00000500},
+        {0x488,0x00000600},
 
         /*  /dev   */
         {0x500,0x00000001},
@@ -218,9 +218,7 @@ static void blkfs_init(filesystem_t* fs,const char* name,device_t* dev){
     dev->ops->read(dev,0,&check,4);
     if((check&0xff)<0xff){
         //Empty ramdisk
-        if(disk_init(dev)){
-            fprintf(2,"Something wrong happened when initializing %s\n",name);
-        }
+        disk_init(dev);
     }
    
     for(int i=0;INODE_START+i*sizeof(disknode_t)<INODE_END;++i){
@@ -408,7 +406,6 @@ static int blkfs_irmdir(inode_t* parent,const char* name){
                 read(dev,blk_off,&id,4);
                 read(dev,INODE_START+id*sizeof(disknode_t)+offsetof(disknode_t,type),&type,4);
                 if(type!=DIR_MODE){
-                    
                     return -1;
                 }else{
                     //TODO: refcnt
@@ -453,7 +450,7 @@ static inline inode_t* new_direc(
     };
     write(dev,offset,&off,4);
 
-    int id=(inode-INODE_START)/0x10;
+    int id=(inode-INODE_START)/sizeof(disknode_t);
     add_inode(fs,id,&file);
 
     write(dev,off,&id,4);
@@ -493,9 +490,31 @@ int is_dir(inode_t* inode){
 }
 
 static inode_t* blkfs_ifind(inode_t* cur,const char* path,int flags){
-    inode_t* next=NULL;//printf("%d\n",is_dir(cur));
-    check(cur,path,flags);
+    inode_t* next=NULL;
+    //printf("$$%s\n",path);
+    if(!cur){
+        //printf("p\n");
+        return NULL; 
+    } 
+    if(*path=='/'){ 
+        while(*path=='/')++path; 
+        if(!is_dir(cur)){ 
+            //printf("p\n");
+            return NULL; 
+        } 
+    } 
+    if(!*path){ 
+        if((flags & O_DIRECTORY) && !is_dir(cur)){ 
+            //printf("p\n");
+            return NULL; 
+        } 
+        else {
+            //printf("p\n");
+            return (inode_t*)cur;
+        }
+    } 
     
+    //printf("here\n");
     const filesystem_t* fs=cur->fs;
     device_t* dev=fs->dev;
     disknode_t* node=cur->ptr;
@@ -525,11 +544,14 @@ static inode_t* blkfs_ifind(inode_t* cur,const char* path,int flags){
         offset+=4;
         char layer[0x100];
         int layer_len=get_first_layer(path);
+        //printf("layer_len:%d\n",layer_len);
         strncpy(layer,path,layer_len);
+        //printf("%s\n",layer);
         while(offset){
             uint32_t blk_off;
             if(read(fs->dev,offset,&blk_off,4)!=4||!blk_off){
                 //No more file in this directory
+                //printf("%x\n", blk_off);
                 if( (flags&O_CREATE) && (path[layer_len]=='\0')){
                     if(flags&O_DIRECTORY)//Only mkdir will gets here
                         return new_direc(cur,offset,path,flags);
